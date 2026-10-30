@@ -1,0 +1,91 @@
+name: Build and Release Tailscale for OpenWrt
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tailscale release tag (leave empty for latest stable, e.g. v1.76.0)'
+        required: false
+        default: ''
+  schedule:
+    # Runs automatically on the 1st of every month at midnight UTC
+    - cron: '0 0 1 * *'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+
+      - name: Determine Tailscale Version
+        run: |
+          if [ -z "${{ github.event.inputs.version }}" ]; then
+            TAG=$(curl -s https://api.github.com/repos/tailscale/tailscale/releases/latest | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          else
+            TAG="${{ github.event.inputs.version }}"
+          fi
+          echo "TARGET_TAG=$TAG" >> $GITHUB_ENV
+          echo "Selected Tailscale version: $TAG"
+
+      - name: Clone Tailscale Source
+        run: |
+          git clone --depth 1 --branch "${{ env.TARGET_TAG }}" https://github.com/tailscale/tailscale.git ts_src
+
+      - name: Compile Lightweight ARM64 Binary
+        run: |
+          cd ts_src
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -tags "ts_omit_ipnbus,ts_omit_tap,ts_omit_kube,ts_omit_aws,ts_omit_bird,ts_mac,ts_omit_tka,ts_omit_ssh" \
+            -o ../tailscale.combined \
+            ./cmd/tailscaled
+          cd ..
+          rm -rf ts_src
+
+      - name: Compress Binary with UPX
+        run: |
+          upx --best --lzma tailscale.combined
+          ls -lh tailscale.combined
+
+      - name: Commit Updated Binary to Main Branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tailscale.combined
+          git diff --staged --quiet || git commit -m "Auto-update tailscale.combined to ${{ env.TARGET_TAG }}"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or Update GitHub Release
+        run: |
+          TAG="${{ env.TARGET_TAG }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, updating asset..."
+            gh release upload "$TAG" tailscale.combined --clobber
+          else
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" tailscale.combined \
+              --title "Tailscale $TAG (arm64 UPX)" \
+              --notes "Automated lightweight build of Tailscale **$TAG** for low-flash OpenWrt routers (e.g. Cudy WR3000 v1 / MediaTek MT7981B).
+- Architecture: `linux/arm64`
+- Retains `netstack` for Subnet Routing
+- Compressed with UPX to ~6MB"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
