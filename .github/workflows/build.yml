@@ -75,6 +75,7 @@ jobs:
       - name: Create or Update GitHub Release
         run: |
           TAG="${{ env.TARGET_TAG }}"
+          NOTES="Automated lightweight build of Tailscale ${TAG} for low-flash OpenWrt routers (e.g. Cudy WR3000 v1 / MediaTek MT7981B). Architecture: linux/arm64, retains netstack for Subnet Routing, compressed with UPX to ~6MB."
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, updating asset..."
             gh release upload "$TAG" tailscale.combined --clobber
@@ -82,10 +83,7 @@ jobs:
             echo "Creating new release $TAG..."
             gh release create "$TAG" tailscale.combined \
               --title "Tailscale $TAG (arm64 UPX)" \
-              --notes "Automated lightweight build of Tailscale **$TAG** for low-flash OpenWrt routers (e.g. Cudy WR3000 v1 / MediaTek MT7981B).
-- Architecture: `linux/arm64`
-- Retains `netstack` for Subnet Routing
-- Compressed with UPX to ~6MB"
+              --notes "$NOTES"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
